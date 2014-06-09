@@ -1,12 +1,9 @@
 #include <linux/module.h>
-#include <linux/irq.h>
-#include <linux/interrupt.h>
 #include <linux/i2c.h>
-#include <linux/workqueue.h>
 
 #include "frz.h"
 
-struct workqueue_struct *m_work_queue;
+//struct workqueue_struct *m_work_queue;
 
 static struct i2c_client *i2c_L3GD20;
 static struct i2c_board_info bi_L3GD20 = {
@@ -40,7 +37,7 @@ static int __init frz_init(void) {
   i2c_put_adapter(i2c_ad);
 
   // Build workqueue
-  m_work_queue = create_singlethread_workqueue("frz_queue");
+  //m_work_queue = create_singlethread_workqueue("frz_queue");
 
   return ret;
 
@@ -58,8 +55,8 @@ static void __exit frz_cleanup(void) {
   }
   i2c_del_driver(&frz_L3GD20_driver);
 
-  flush_workqueue(m_work_queue);
-  destroy_workqueue(m_work_queue);
+  //flush_workqueue(m_work_queue);
+  //destroy_workqueue(m_work_queue);
 }
 
 MODULE_LICENSE("GPL");
