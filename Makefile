@@ -1,5 +1,5 @@
 obj-m += frz.o
-frz-objs += L3GD20.o main.o
+frz-objs += L3GD20.o 
 
 
 all:
