@@ -10,6 +10,7 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
+#include <linux/seq_file.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <asm/uaccess.h>
@@ -59,19 +60,26 @@ static struct L3GD20_td data[SAMPLE_COUNT];
 /* 
  * Char driver interface
  */
-loff_t  L3GD20_llseek   (struct file *filp, loff_t offset, int whence);
-ssize_t L3GD20_read     (struct file *filp, char __user *buff, size_t count, loff_t *offp);
-int     L3GD20_open     (struct inode *inode, struct file *filp);
-int     L3GD20_release  (struct inode *inode, struct file *filp);
-unsigned int L3GD20_poll(struct file* filp, struct poll_table_struct *);
+static void* L3GD20_seq_start(struct seq_file *s, loff_t *pos);
+static void* L3GD20_seq_next (struct seq_file *s, void *v, loff_t *pos);
+static void  L3GD20_seq_stop (struct seq_file *s, void *v);
+static int   L3GD20_seq_show (struct seq_file *s, void *v);
 
+static struct seq_operations L3GD20_seq_ops = {
+  .start = L3GD20_seq_start,
+  .next =  L3GD20_seq_next,
+  .stop =  L3GD20_seq_stop,
+  .show =  L3GD20_seq_show, 
+};
+
+
+int     L3GD20_open     (struct inode *inode, struct file *filp);
 static struct file_operations L3GD20_file_ops = {
   .owner   = THIS_MODULE,
-  .llseek  = L3GD20_llseek,
-  .read    = L3GD20_read,
   .open    = L3GD20_open,
-  .release = L3GD20_release,
-  .poll    = L3GD20_poll,
+  .read    = seq_read,
+  .llseek  = seq_lseek,
+  .release = seq_release,
 };
 
 /* 
@@ -404,78 +412,27 @@ static int frz_L3GD20_read_measure(struct i2c_client *client, struct L3GD20_d *d
 /* 
  * Begin char driver
  */
-loff_t L3GD20_llseek(struct file *filp, loff_t offset, int whence) {
-  return -EIO;
-}
-
-ssize_t L3GD20_read(struct file *filp, char __user *buff, size_t count, loff_t *offp) {
-  struct L3GD20_file_info *f_info = (struct L3GD20_file_info *) filp->private_data;
-  int req_samples = count / sizeof(struct L3GD20_td);
-  int buff_off = f_info->cur_index % SAMPLE_COUNT;
-
-  ssize_t ret;
-
-  printk("cur_index: %d\n", cur_index);
-  printk("req_samples: %d\n", req_samples);
-  printk("buff_off:    %d\n", buff_off);
-  
-  // Have to read more than 1 reading
-  if (req_samples == 0) {
-    return -EINVAL;
-  }
-  // Don't read off the end of the buffer
-  if (buff_off + req_samples > SAMPLE_COUNT) {
-    req_samples = SAMPLE_COUNT - buff_off;  
-  }
-
-  // Don't read ahead of the data
-  if (f_info->cur_index + req_samples > cur_index) {
-    req_samples = f_info->cur_index - cur_index;
-  }
-
-  if (req_samples == 0) {
-    return 0;
-  }
-
-  printk("req_samples (capped): %d\n", req_samples);
-
-  ret = req_samples * sizeof(struct L3GD20_td);
-
-  printk("Ret: %d  sizeof(data): %d\n", ret, sizeof(data));
-
-  if (copy_to_user(buff, data, ret)) {
-    return -EFAULT;
-  }
-  f_info->cur_index += req_samples;
-
-  return ret;
-  //if (copy_to_user(buff, "Some message which will not fit", amount)) {
-}
-
 int L3GD20_open(struct inode *inode, struct file *filp) {
-  struct L3GD20_file_info *f_info;
-
-  f_info = kzalloc(sizeof(struct L3GD20_file_info), GFP_KERNEL);
-  if (IS_ERR(f_info)) {
-    return -ENOMEM;
-  }
-  f_info->cur_index = cur_index;
-  f_info->L3GD20 = L3GD20_DEV(inode);
-  filp->private_data = f_info;
-  
-  return 0;
+  return seq_open(filp, &L3GD20_seq_ops);
 }
 
-int L3GD20_release(struct inode *inode, struct file *filp) {
-  if (!IS_ERR(filp->private_data)) {
-    kfree(filp->private_data);
-  }
-  filp->private_data = NULL;
-  return 0;
+static void* L3GD20_seq_start(struct seq_file *s, loff_t *pos) {
+  struct L3GD20_file_info *f_info = kzalloc(
+
+  f_info->L3GD20 = L3GD20_device(s->
+
 }
 
-unsigned int L3GD20_poll(struct file* filp, struct poll_table_struct *poll_t) {
-  return -EIO;
+static void* L3GD20_seq_next (struct seq_file *s, void *v, loff_t *pos) {
+
+}
+
+static void  L3GD20_seq_stop (struct seq_file *s, void *v) {
+
+}
+
+static int   L3GD20_seq_show (struct seq_file *s, void *v) {
+
 }
 
 MODULE_LICENSE("GPL");
