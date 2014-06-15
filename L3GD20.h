@@ -49,3 +49,16 @@
 #define L3GD20_BIT_REG3_BOOT_ST (1 << 6)
 #define L3GD20_BIT_REG3_INT1_HL (1 << 5)
 #define L3GD20_BIT_REG3_OD      (1 << 4) 
+
+struct L3GD20_d {
+  uint16_t X;
+  uint16_t Y;
+  uint16_t Z;
+};
+
+
+struct L3GD20_td {
+  struct timespec t;
+  struct L3GD20_d d;
+};
+
