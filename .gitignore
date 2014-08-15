@@ -21,3 +21,9 @@
 *.i*86
 *.x86_64
 *.hex
+
+# Kernel stuff
+*.cmd
+*.symvers
+*.mod.c
+modules.order
