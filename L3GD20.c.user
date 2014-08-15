@@ -1,0 +1,191 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <errno.h>
+#include <time.h>
+#include <linux/i2c-dev.h>
+
+#include "L3GD20.h"
+
+
+int write_L3GD20_config(int i2c_fd, L3GD20_t *gyro) {
+  uint8_t reg;
+  uint8_t sig;
+  
+  if (ioctl(i2c_fd, I2C_SLAVE, gyro->i2c_addr) < 0) {
+    perror("Unable to get bus access to talk to slave");
+    return -1;
+  }
+
+  reg = L3GD20_REG_SIG;
+  if (write(i2c_fd, &reg, sizeof(reg)) != sizeof(reg)) {
+    perror("Failed to write address");
+    return -1;
+  }
+
+  if (read(i2c_fd, &sig, sizeof(sig)) != sizeof(sig)) {
+    perror("Failed to read signature");
+    return -1;
+  }
+
+  if (sig != L3GD20_SIG) {
+    fprintf(stderr, "Wrong signature, got %X, expected %X:%s\n", sig, L3GD20_SIG, strerror(errno));
+    return -1;
+  }
+
+  // Begin writing CTRL_REGn
+  if (ioctl(i2c_fd, I2C_SLAVE, gyro->i2c_addr) < 0) {
+    perror("Unable to get bus access to talk to slave");
+    return -1;
+  }
+
+  if (write(i2c_fd, &(gyro->CTRL_REG), sizeof(gyro->CTRL_REG)) != sizeof(gyro->CTRL_REG)) {
+    perror("Error writing config data");
+    return -1;
+  }
+  
+  // Writing FIFO_CTRL
+  if (ioctl(i2c_fd, I2C_SLAVE, gyro->i2c_addr) < 0) {
+    perror("Unable to get bus access to talk to slave");
+    return -1;
+  }
+
+  if (write(i2c_fd, &(gyro->FIFO_CTRL_REG), sizeof(gyro->FIFO_CTRL_REG)) != sizeof(gyro->FIFO_CTRL_REG)) {
+    perror("Error writn config data");
+    return -1;
+  }
+
+  return 1;
+}
+
+int read_L3GD20_measurement(int i2c_fd, L3GD20_t *gyro, L3GD20_data_t *out) {
+  uint8_t reg;
+
+  if (ioctl(i2c_fd, I2C_SLAVE, gyro->i2c_addr) < 0) {
+    perror("Unable to get bus access to talk to slave");
+    return -1;
+  }
+
+  reg = (L3GD20_REG_OUT_X_L | L3GD20_REG_AUTO_INC);
+  if (write(i2c_fd, &reg, 1) < 0) {
+    perror("Error writing register to i2c slave");
+    return -1;
+  }
+
+  if (read(i2c_fd, out, sizeof(*out)) != sizeof(*out)) {
+    perror("Error reading measurement");
+    return -1;
+  }
+
+  out->x -= gyro->offset_x;
+  out->y -= gyro->offset_y;
+  out->z -= gyro->offset_z;
+
+  return 1;
+}
+
+
+int read_L3GD20_FIFO(int i2c_fd, L3GD20_t *gyro, L3GD20_data_t *out) {
+  uint8_t reg;
+  uint8_t lines;
+  int     i;
+//  struct timespec tm_start, tm_stop;
+
+//  clock_gettime(CLOCK_REALTIME, &tm_start);
+
+  if (ioctl(i2c_fd, I2C_SLAVE, gyro->i2c_addr) < 0) {
+    perror("Unable to get bus access to talk to slave");
+    return -1;
+  }
+
+  reg = L3GD20_REG_FIFO_SRC_REG;
+  if (write(i2c_fd, &reg, sizeof(reg)) != sizeof(reg)) {
+    perror("Failed to write address");
+    return -1;
+  }
+
+  if (read(i2c_fd, &lines, sizeof(lines)) != sizeof(lines)) {
+    perror("Failed to read lines");
+    return -1;
+  }
+
+  for(i = 0; i < lines && i < 32; i++) {
+    read_L3GD20_measurement(i2c_fd, gyro, out + i);   
+  }
+
+  flush_L3GD20_FIFO(i2c_fd, gyro);
+
+//  clock_gettime(CLOCK_REALTIME, &tm_stop);
+
+//  printf("GYRO:%f\n",
+//    (tm_stop.tv_sec  - tm_start.tv_sec) +
+//    (tm_stop.tv_nsec - tm_start.tv_nsec) / 1000000000.0);
+
+  return lines;
+
+}
+
+int flush_L3GD20_FIFO(int i2c_fd, L3GD20_t *gyro) {
+  uint8_t fifo_ctrl_before;
+
+  fifo_ctrl_before = gyro->FIFO_CTRL_REG.FIFO_CTRL_REG;
+
+  // Flush the FIFO
+  gyro->FIFO_CTRL_REG.FIFO_CTRL_REG = 0;
+  if (ioctl(i2c_fd, I2C_SLAVE, gyro->i2c_addr) < 0) {
+    perror("Unable to get bus access to talk to slave");
+    return -1;
+  }
+
+  if (write(i2c_fd, &(gyro->FIFO_CTRL_REG), sizeof(gyro->FIFO_CTRL_REG)) != sizeof(gyro->FIFO_CTRL_REG)) {
+    perror("Error writn config data");
+    return -1;
+  }
+  
+  // Re-enable the fifo
+  gyro->FIFO_CTRL_REG.FIFO_CTRL_REG = fifo_ctrl_before;
+  if (ioctl(i2c_fd, I2C_SLAVE, gyro->i2c_addr) < 0) {
+    perror("Unable to get bus access to talk to slave");
+    return -1;
+  }
+
+  if (write(i2c_fd, &(gyro->FIFO_CTRL_REG), sizeof(gyro->FIFO_CTRL_REG)) != sizeof(gyro->FIFO_CTRL_REG)) {
+    perror("Error writn config data");
+    return -1;
+  }
+  return 1;
+}
+
+void calibrate_L3GD20(int l2c_fd, L3GD20_t *gyro) {
+  L3GD20_data_t data;
+  int count;
+
+  int x; 
+  int y;
+  int z;
+
+  // Clear the offsets so they don't affect us
+  gyro->offset_x = 0;
+  gyro->offset_y = 0;
+  gyro->offset_z = 0;
+
+  x = 0;
+  y = 0;
+  z = 0;
+  for (count = 0; count < OFFSET_SAMPLE_COUNT; count++) {
+    read_L3GD20_measurement(l2c_fd, gyro, &data);
+    flush_L3GD20_FIFO(l2c_fd, gyro);
+
+    x += data.x;
+    y += data.y;
+    z += data.z;
+  }
+
+  gyro->offset_x = x/(OFFSET_SAMPLE_COUNT);
+  gyro->offset_y = y/(OFFSET_SAMPLE_COUNT);
+  gyro->offset_z = z/(OFFSET_SAMPLE_COUNT);
+
+  printf("Offsets X: %3d  Y: %3d  Z: %3d\n", gyro->offset_x, gyro->offset_y, gyro->offset_z);
+}
