@@ -24,12 +24,9 @@
 #include <linux/gpio.h>
 #include <linux/mod_devicetable.h>
 #include <linux/time.h>
-#include <linux/mm.h>
 #include <linux/slab.h>
-#include <linux/fs.h>
-#include <linux/seq_file.h>
-#include <linux/cdev.h>
 #include <linux/device.h>
+#include <linux/input.h>
 #include <asm/uaccess.h>
 
 #include "L3GD20.h"
@@ -51,52 +48,10 @@ struct L3GD20_device {
   struct i2c_client *client;
   int                irq;
 
-  struct cdev        char_dev;
   struct device      dev;
-
-  struct L3GD20_td  *data;
-  int                cur_index; // This is the next to be written to...
 };
-
-static inline struct L3GD20_device* L3GD20_DEV(struct inode* inode) {
-  return container_of(inode->i_cdev, struct L3GD20_device, char_dev);
-}
-
-struct L3GD20_file_info {
-  int cur_index;
-  struct L3GD20_device *L3GD20;
-};
-
-static spinlock_t active_devs_lock;
-static struct L3GD20_device active_devs[NUM_DEV];
-
-//static int cur_index = 0;
-//static struct L3GD20_td data[SAMPLE_COUNT];
-
-/* 
- * Char driver interface
- */
-static void* L3GD20_seq_start(struct seq_file *s, loff_t *pos);
-static void* L3GD20_seq_next (struct seq_file *s, void *v, loff_t *pos);
-static void  L3GD20_seq_stop (struct seq_file *s, void *v);
-static int   L3GD20_seq_show (struct seq_file *s, void *v);
-
-static struct seq_operations L3GD20_seq_ops = {
-  .start = L3GD20_seq_start,
-  .next =  L3GD20_seq_next,
-  .stop =  L3GD20_seq_stop,
-  .show =  L3GD20_seq_show, 
-};
-
 
 int     L3GD20_open     (struct inode *inode, struct file *filp);
-static struct file_operations L3GD20_file_ops = {
-  .owner   = THIS_MODULE,
-  .open    = L3GD20_open,
-  .read    = seq_read,
-  .llseek  = seq_lseek,
-  .release = seq_release,
-};
 
 /* 
  * Begin i2c device definitions 
@@ -133,14 +88,14 @@ MODULE_DEVICE_TABLE(i2c, frz_L3GD20_idtable);
  */
 static int frz_L3GD20_read_byte (struct i2c_client *client, u8 reg);
 static int frz_L3GD20_write_byte(struct i2c_client *client, u8 reg, u8 value);
-static int frz_L3GD20_read_measure(struct i2c_client *client, struct L3GD20_d *data);
-
 
 /* 
  * Threaded interupt
  * @dev_id - should be m_activedev
  */
 static irqreturn_t frz_handle_interupt(int irq, void* dev_id) {
+  struct L3GD20_d      data;
+
   struct L3GD20_device *drv;
   struct i2c_client    *client;
 #ifdef __DEBUG_RATE
@@ -161,20 +116,22 @@ static irqreturn_t frz_handle_interupt(int irq, void* dev_id) {
 #endif
 
   drv = dev_id;
-
-  if ((dev_id <(void*) active_devs) || (dev_id >(void*) (active_devs + NUM_DEV))) {
-    printk("WTF %s\n", __func__);
-    return IRQ_NONE;
-  }
-
-  spin_lock(&active_devs_lock);
   client = drv->client;
-  spin_unlock(&active_devs_lock);
 
   if (IS_ERR(client)) return IRQ_NONE;
 
-  frz_L3GD20_read_measure(drv->client, &drv->data[drv->cur_index % SAMPLE_COUNT].d);
-  drv->cur_index++;
+  if (i2c_smbus_read_i2c_block_data(
+        client, 
+        L3GD20_REG_OUT_X_L | L3GD20_REG_AUTO_INC, 
+        sizeof(struct L3GD20_d),  
+        (u8*) &data) 
+      == sizeof(struct L3GD20_d)) {
+    // Parse the event
+    printk("%d %d %d\n", data.X, data.Y, data.Z);
+  }
+  else {
+    printk("??\n");
+  }
 
   return (IRQ_HANDLED);
 }
@@ -188,12 +145,8 @@ static irqreturn_t frz_quick_check(int irq, void* dev_id) {
 
   drv = dev_id;
 
-  if ((dev_id <(void*) active_devs) || (dev_id >(void*) (active_devs + NUM_DEV))) {
-    return IRQ_NONE;
-  }
-
   // Get index in buffer, then get time
-  getnstimeofday(&drv->data[drv->cur_index % SAMPLE_COUNT].t);
+  //getnstimeofday(&drv->data[drv->cur_index % SAMPLE_COUNT].t);
   return (IRQ_WAKE_THREAD);
 }
 
@@ -204,28 +157,18 @@ static int frz_L3GD20_probe(struct i2c_client *client,
                      const struct i2c_device_id *id) {
   int sig;
   int ret;
-  int i;
 
-  struct L3GD20_device *d = NULL;
+  struct L3GD20_device *d = kzalloc(sizeof(*d), GFP_KERNEL);
+  struct input_dev *input_dev = input_allocate_device();
 
-  printk("Probing\n");
+  if (!d || !input_dev) {
+    ret = -ENOMEM;
+    goto err_free_mem;
+  }
+
   ret = -ENODEV;
 
-  spin_lock(&active_devs_lock);
-  for (i = 0; i < NUM_DEV && !d; i++) {
-    if (active_devs[i].client == NULL) {
-      d = active_devs + i;
-    }
-  }
-  if (d) {
-    d->client = client;
-  }
-  spin_unlock(&active_devs_lock);
-  if (!d) {
-    goto err;
-  }
-  
-
+  d->client = client;
   sig = frz_L3GD20_read_byte(client, L3GD20_REG_SIG);
   if (sig < 0) {
     printk("Failed to read: %d\n", sig);
@@ -245,21 +188,8 @@ static int frz_L3GD20_probe(struct i2c_client *client,
   if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG5, 0b01000000) < 0)    goto err_free_dev;
   if(frz_L3GD20_write_byte(client, L3GD20_REG_FIFO_CTRL_REG, 0b0100001) < 0) goto err_free_dev;
 
-  // Allocate the buffer
-  d->data = (struct L3GD20_td*) __get_free_page(GFP_KERNEL);
-
-  if (d->data == NULL) {
-    ret = -ENOMEM;
-    goto err_free_dev;
-  }
-  memset(d->data, 0, PAGE_SIZE);
-
-  d->cur_index = 0;
-  printk("Buffer size: %ld   L3GD20_td size: %u Page size: %ld\n", SAMPLE_COUNT, sizeof(struct L3GD20_td), PAGE_SIZE);
-
-
   // TODO - not make this hard coded
-  d->irq = gpio_to_irq(17);
+  d->irq = gpio_to_irq(18);
   printk("IRQ %d\n", d->irq);
   if ((ret = request_threaded_irq(d->irq,
                            frz_quick_check, 
@@ -267,7 +197,7 @@ static int frz_L3GD20_probe(struct i2c_client *client,
                            IRQF_ONESHOT | IRQF_TRIGGER_RISING | IRQF_TRIGGER_HIGH  , 
                            "L3GD20_rising_high", 
                            d)) < 0) {
-    goto err_free_mem;
+    goto err_free_dev;
   }
 
   device_initialize(&d->dev);
@@ -286,6 +216,7 @@ static int frz_L3GD20_probe(struct i2c_client *client,
     printk("Failed to add device %d\n", ret);
     goto err_free_irq;
   }
+  i2c_set_clientdata(client, d);
 
   printk("Success\n");
   return 0;
@@ -294,27 +225,19 @@ static int frz_L3GD20_probe(struct i2c_client *client,
 //  device_del(&d->dev);
 err_free_irq:
   free_irq(d->irq, d);
-err_free_mem:
-  free_page((unsigned long) d->data); 
 err_free_dev:
   d->client = NULL;
-err:
-  printk("Err: %s\n", __func__);
+err_free_mem:
+  kfree(d);
   return ret;
 }
 
 static int frz_L3GD20_remove(struct i2c_client *client) {
-  int i;
   struct L3GD20_device *dv;
+
   printk("Removing \n");
 
-  for (i = 0; i < NUM_DEV; i++) {
-    if (active_devs[i].client == client) {
-      dv = &active_devs[i];
-      break;
-    }
-  }
-
+  dv = i2c_get_clientdata(client);
   if (!dv) {
     printk("WTF?? %s\n", __func__);
     return -ENODEV;
@@ -323,9 +246,6 @@ static int frz_L3GD20_remove(struct i2c_client *client) {
   free_irq(dv->irq, dv); dv->client = NULL;
 
   device_del(&dv->dev);
-
-  if (dv->data)  free_page((unsigned long) dv->data);
-  dv->data = NULL;
 
   return 0;
 }
@@ -347,28 +267,12 @@ static int frz_L3GD20_detect(struct i2c_client *client, struct i2c_board_info *b
   return -ENODEV;
 }
 
-/*
- * Begin File interface
- */
-
 static int __init L3GD20_init(void) {
   int ret;
-  int i;
-
-  spin_lock_init(&active_devs_lock);
-
   if ((ret = alloc_chrdev_region(&L3GD20_dev, 0, NUM_DEV, "L3GD20")) < 0) {
     goto out; 
   }
 
-  for (i = 0; i < NUM_DEV; i++) {
-    active_devs[i].dev.devt = MKDEV(MAJOR(L3GD20_dev), i);
-    cdev_init(&active_devs[i].char_dev, &L3GD20_file_ops);
-    active_devs[i].char_dev.owner = THIS_MODULE;
-    if(cdev_add(&active_devs[i].char_dev, active_devs[i].dev.devt, 1) < 0) {
-      printk("cdev_add failed\n");
-    }
-  }
 
   ret = i2c_add_driver(&frz_L3GD20_driver);
   if (ret < 0) {
@@ -376,16 +280,8 @@ static int __init L3GD20_init(void) {
     goto out_release_region;
   }
 
-  L3GD20_class = class_create(THIS_MODULE, "L3GD20");
-  if (IS_ERR(L3GD20_class)) {
-    ret = PTR_ERR(L3GD20_class);
-    goto out_remove_driver;
-  }
-  
   return ret;
 
-out_remove_driver:
-  i2c_del_driver(&frz_L3GD20_driver); 
 out_release_region:
   unregister_chrdev_region(L3GD20_dev, NUM_DEV);
 out:
@@ -393,13 +289,6 @@ out:
 }
 
 static void __exit L3GD20_cleanup(void) {
-  int i;
-
-  for (i = 0; i < NUM_DEV; i++) {
-    cdev_del(&active_devs[i].char_dev);
-    device_destroy(L3GD20_class, active_devs[i].dev.devt);
-  }
-
   class_destroy(L3GD20_class);
   L3GD20_class = NULL;
 
@@ -416,66 +305,6 @@ static int frz_L3GD20_read_byte(struct i2c_client *client, u8 reg) {
 
 static int frz_L3GD20_write_byte(struct i2c_client *client, u8 reg, u8 value) {
   return i2c_smbus_write_byte_data(client, reg, value);
-}
-
-static int frz_L3GD20_read_measure(struct i2c_client *client, struct L3GD20_d *data) {
-  if (data == NULL) return -EINVAL;
-
-  if (i2c_smbus_read_i2c_block_data(client, 
-                                    L3GD20_REG_OUT_X_L | L3GD20_REG_AUTO_INC, 
-                                    sizeof(struct L3GD20_d),  
-                                    (void*) data) != sizeof(struct L3GD20_d)) {
-    return -EIO;
-  }
-  return sizeof(struct L3GD20_d);
-}
-
-/* 
- * Begin char driver
- */
-int L3GD20_open(struct inode *inode, struct file *filp) {
-  int ret;
-
-  ret = seq_open(filp, &L3GD20_seq_ops);
-
-  if (ret >= 0) {
-    struct L3GD20_file_info *f_info = kzalloc(sizeof(struct L3GD20_file_info), GFP_KERNEL);
-    struct seq_file *p = filp->private_data;
-
-    f_info->L3GD20 = L3GD20_DEV(inode);
-    f_info->cur_index =0;// f_info->L3GD20->cur_index;
-    printk("%s: %p\n", __func__, p);
-
-    p->private = f_info;
-  }
-
-  return ret;
-}
-
-static void* L3GD20_seq_start(struct seq_file *s, loff_t *pos) {
-  struct L3GD20_file_info *f_info = s->private;
-  if (f_info == NULL) {
-    printk("%s: %p %p\n", __func__, f_info, s);
-  }
-  else {
-    printk("%s: %d %p\n", __func__, f_info->cur_index, f_info);
-  }
-  return f_info;
-}
-
-static void* L3GD20_seq_next (struct seq_file *s, void *v, loff_t *pos) {
-  printk("%s: %p\n", __func__, v);
-  return NULL;
-}
-
-static void  L3GD20_seq_stop (struct seq_file *s, void *v) {
-  if (s->private) {
-    kfree(s->private);
-  }
-}
-
-static int   L3GD20_seq_show (struct seq_file *s, void *v) {
-  return seq_printf(s, "%s: %p\n", __func__, v);
 }
 
 MODULE_LICENSE("GPL");
