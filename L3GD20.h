@@ -68,9 +68,9 @@
 #define L3GD20_BIT_REG3_OD      (1 << 4) 
 
 struct L3GD20_d {
-  uint16_t X;
-  uint16_t Y;
-  uint16_t Z;
+  int16_t X;
+  int16_t Y;
+  int16_t Z;
 };
 
 

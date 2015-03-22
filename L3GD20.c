@@ -35,12 +35,13 @@
 
 #define NUM_DEV 10
 
+#define __DEBUG_RATE
 
 static struct class *L3GD20_class;
 static dev_t L3GD20_dev;
 
 #ifdef __DEBUG_RATE
-static struct timespec t_start;
+static ktime_t t_start;
 static int             count = 0;
 #endif
 
@@ -61,6 +62,7 @@ int     L3GD20_open     (struct inode *inode, struct file *filp);
 static int frz_L3GD20_probe (struct i2c_client *client, const struct i2c_device_id *id);
 static int frz_L3GD20_remove(struct i2c_client *client);
 static int frz_L3GD20_detect(struct i2c_client *client, struct i2c_board_info *bi);
+void dumpConfig(struct i2c_client *client);
 
 static int  frz_input_open (struct input_dev *input);
 static void frz_input_close(struct input_dev *input);
@@ -81,10 +83,10 @@ struct i2c_driver frz_L3GD20_driver = {
   },
   .id_table = frz_L3GD20_idtable,
 
-  .probe = frz_L3GD20_probe,
-  .remove = frz_L3GD20_remove,
-  .class = I2C_CLASS_HWMON | I2C_CLASS_DDC, 
-  .detect = frz_L3GD20_detect, 
+  .probe        = frz_L3GD20_probe,
+  .remove       = frz_L3GD20_remove,
+  .class        = I2C_CLASS_HWMON | I2C_CLASS_DDC, 
+  .detect       = frz_L3GD20_detect, 
   .address_list = normal_i2c,
 };
 
@@ -121,22 +123,23 @@ static irqreturn_t frz_handle_interupt(int irq, void* dev_id) {
 
   struct L3GD20_device *dev;
   struct i2c_client    *client;
+
 #ifdef __DEBUG_RATE
-  struct timespec t;
-  long elapsed_nsec; 
+  ktime_t current_time;
+  ktime_t diff;
 #endif
 
 #ifdef __DEBUG_RATE
   if (count % 100 == 0) {
-    getnstimeofday(&t);
-    elapsed_nsec = (t.tv_sec - t_start.tv_sec) * 1000000000;
-    elapsed_nsec += (t.tv_nsec - t_start.tv_nsec);
-    printk("100 iterations in %ld nsecs\n", elapsed_nsec);
-    t_start.tv_sec = t.tv_sec;
-    t_start.tv_nsec = t.tv_nsec;
+    current_time = ktime_get();
+    diff = ktime_sub(current_time, t_start);
+    printk("100 iterations in %lld \n", ktime_to_ns(diff));
+    t_start = current_time;
   }
   count++;
 #endif
+
+  memset(&data, 0, sizeof(data));
 
   dev = dev_id;
   client = dev->client;
@@ -153,15 +156,14 @@ static irqreturn_t frz_handle_interupt(int irq, void* dev_id) {
   if (i2c_smbus_read_i2c_block_data(
         client, 
         L3GD20_REG_OUT_X_L | L3GD20_REG_AUTO_INC, 
-        sizeof(struct L3GD20_d),  
+	      sizeof(data),
         (u8*) &data) 
       != sizeof(struct L3GD20_d)) return IRQ_NONE;
 
-  input_event(dev->input, EV_ABS, ABS_X, data.X);
-  input_event(dev->input, EV_ABS, ABS_Y, data.Y);
-  input_event(dev->input, EV_ABS, ABS_Z, data.Z);
-
-  //mdelay(30);
+  input_report_abs(dev->input, ABS_X, data.X);
+  input_report_abs(dev->input, ABS_Y, data.Y);
+  input_report_abs(dev->input, ABS_Z, data.Z);
+  input_sync(dev->input);
 
   return (IRQ_HANDLED);
 }
@@ -189,7 +191,7 @@ static int frz_L3GD20_probe(struct i2c_client *client,
   int ret;
   int err;
 
-  int irq = gpio_to_irq(18);
+  int irq = gpio_to_irq(23);
 
   struct device *i2c_dev = &client->dev;
 
@@ -233,9 +235,9 @@ static int frz_L3GD20_probe(struct i2c_client *client,
   input_set_drvdata(input_dev, dev_info);
 
   __set_bit(EV_ABS, input_dev->evbit);
-  __set_bit(ABS_X, input_dev->absbit);
-  __set_bit(ABS_Y, input_dev->absbit);
-  __set_bit(ABS_Z, input_dev->absbit);
+  __set_bit(ABS_X,  input_dev->absbit);
+  __set_bit(ABS_Y,  input_dev->absbit);
+  __set_bit(ABS_Z,  input_dev->absbit);
 
   input_set_abs_params(input_dev, ABS_X, -4096, 4096, 0, 0);
   input_set_abs_params(input_dev, ABS_Y, -4096, 4096, 0, 0);
@@ -246,19 +248,19 @@ static int frz_L3GD20_probe(struct i2c_client *client,
   
   // TODO - make this configurable
   /*
-    dr  = 01
+    dr  = 00 - 190 hrz
     bw  = 00
     PD  = 1
     Zen = 1
     Xen = 1
     Yen = 1
   */
-  if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG1, 0b01001111) < 0)    goto err_free_mem;
-  if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG2, 0b00101001) < 0)    goto err_free_mem;
-  if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG3, 0b00001000) < 0)    goto err_free_mem;
-  if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG4, 0b10000000) < 0)    goto err_free_mem;
-  if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG5, 0b01000000) < 0)    goto err_free_mem;
+  //if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG2,     0b00101001) < 0)    goto err_free_mem;
+  if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG3,     0b00001000) < 0)    goto err_free_mem;
+  //if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG4,     0b00000000) < 0)    goto err_free_mem;
+  //if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG5,     0b01000000) < 0)    goto err_free_mem;
   if(frz_L3GD20_write_byte(client, L3GD20_REG_FIFO_CTRL_REG, 0b0100001) < 0) goto err_free_mem;
+  if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG1,     0b00001111) < 0)    goto err_free_mem;
 
   err = sysfs_create_group(&i2c_dev->kobj, &L3GD20_attr_group);
   if (err)
@@ -281,6 +283,8 @@ static int frz_L3GD20_probe(struct i2c_client *client,
     goto err_free_mem;
   }
 
+  dumpConfig(client);
+
   printk("Success\n");
   return 0;
 
@@ -292,6 +296,25 @@ err_free_mem:
   input_free_device(input_dev);
   kfree(dev_info);
   return ret;
+}
+
+void dumpConfig(struct i2c_client *client) {
+  unsigned char data[8];
+  int idx;
+
+  if (i2c_smbus_read_i2c_block_data(
+        client,
+        0x20 | L3GD20_REG_AUTO_INC,
+        sizeof(data),
+        (u8*) data)
+      != sizeof(data)) {
+    printk("Failed to read\n"); 
+    return;
+  }
+
+  for (idx = 0; idx < sizeof(data); idx++) {
+    printk("%X: %2.2X\n", 0x20 + idx, data[idx]);
+  }
 }
 
 static int frz_input_open(struct input_dev *input) {
