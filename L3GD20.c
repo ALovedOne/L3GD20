@@ -256,9 +256,9 @@ static int frz_L3GD20_probe(struct i2c_client *client,
   */
   //if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG2,     0b00101001) < 0)    goto err_free_mem;
   if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG3,     0b00001000) < 0)    goto err_free_mem;
-  //if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG4,     0b00000000) < 0)    goto err_free_mem;
-  //if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG5,     0b01000000) < 0)    goto err_free_mem;
-  if(frz_L3GD20_write_byte(client, L3GD20_REG_FIFO_CTRL_REG, 0b0100001) < 0) goto err_free_mem;
+  if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG4,     0b10110000) < 0)    goto err_free_mem;
+  if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG5,     0b01000000) < 0)    goto err_free_mem;
+  if(frz_L3GD20_write_byte(client, L3GD20_REG_FIFO_CTRL_REG, 0b0010001) < 0) goto err_free_mem;
   if(frz_L3GD20_write_byte(client, L3GD20_REG_CTRL_REG1,     0b00001111) < 0)    goto err_free_mem;
 
   err = sysfs_create_group(&i2c_dev->kobj, &L3GD20_attr_group);
