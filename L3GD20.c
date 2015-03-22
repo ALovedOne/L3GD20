@@ -35,7 +35,7 @@
 
 #define NUM_DEV 10
 
-#define __DEBUG_RATE
+//#define __DEBUG_RATE
 
 static struct class *L3GD20_class;
 static dev_t L3GD20_dev;
@@ -178,7 +178,6 @@ static irqreturn_t frz_quick_check(int irq, void* dev_id) {
   dev = dev_id;
 
   // Get index in buffer, then get time
-  //getnstimeofday(&drv->data[drv->cur_index % SAMPLE_COUNT].t);
   return (IRQ_WAKE_THREAD);
 }
 
