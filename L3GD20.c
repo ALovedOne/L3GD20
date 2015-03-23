@@ -34,6 +34,7 @@
 #include "frz.h"
 
 #define NUM_DEV 10
+#define BASE_CNT 200
 
 //#define __DEBUG_RATE
 
@@ -52,6 +53,11 @@ struct L3GD20_device {
   struct device       *dev;
   struct input_dev    *input;
   char                 phys[32];
+  // Baseline stuff
+  int base_cnt;
+  int base_sum_x;
+  int base_sum_y;
+  int base_sum_z;
 };
 
 int     L3GD20_open     (struct inode *inode, struct file *filp);
@@ -156,14 +162,28 @@ static irqreturn_t frz_handle_interupt(int irq, void* dev_id) {
   if (i2c_smbus_read_i2c_block_data(
         client, 
         L3GD20_REG_OUT_X_L | L3GD20_REG_AUTO_INC, 
-	      sizeof(data),
+        sizeof(data),
         (u8*) &data) 
       != sizeof(struct L3GD20_d)) return IRQ_NONE;
 
-  input_report_abs(dev->input, ABS_X, data.X);
-  input_report_abs(dev->input, ABS_Y, data.Y);
-  input_report_abs(dev->input, ABS_Z, data.Z);
-  input_sync(dev->input);
+  if (dev->base_cnt > 0) {
+    dev->base_sum_x += data.X;
+    dev->base_sum_y += data.Y;
+    dev->base_sum_z += data.Z;
+    dev->base_cnt--;
+
+    if (dev->base_cnt == 0) {
+      printk("Starting\n");
+      dev->base_sum_x = dev->base_sum_x / BASE_CNT;
+      dev->base_sum_y = dev->base_sum_y / BASE_CNT;
+      dev->base_sum_z = dev->base_sum_z / BASE_CNT;
+    }
+  } else {
+    input_report_abs(dev->input, ABS_X, data.X - dev->base_sum_x);
+    input_report_abs(dev->input, ABS_Y, data.Y - dev->base_sum_y);
+    input_report_abs(dev->input, ABS_Z, data.Z - dev->base_sum_z);
+    input_sync(dev->input);
+  }
 
   return (IRQ_HANDLED);
 }
@@ -208,6 +228,11 @@ static int frz_L3GD20_probe(struct i2c_client *client,
   dev_info->dev    = i2c_dev;
   dev_info->irq    = irq;
   dev_info->client = client;
+
+  dev_info->base_cnt = BASE_CNT;
+  dev_info->base_sum_x = 0;
+  dev_info->base_sum_y = 0;
+  dev_info->base_sum_z = 0;
   
   input_dev->name = "L3GD20 Gyro";
   
@@ -404,3 +429,4 @@ MODULE_LICENSE("GPL");
 
 module_init(L3GD20_init);
 module_exit(L3GD20_cleanup);
+
